@@ -27,8 +27,14 @@ export default function SearchDetections() {
   const [selectedRegionId, setSelectedRegionId] = useState('');
   const [results, setResults] = useState<SearchResult[]>([]);
   const [isLoading, setIsLoading] = useState(false);
+  const [actionLoading, setActionLoading] = useState<{ [key: number]: boolean }>({});
+  const [selectedItems, setSelectedItems] = useState<number[]>([]);
+  const [isDeletingBulk, setIsDeletingBulk] = useState(false);
   const [error, setError] = useState('');
   const [selectedImg, setSelectedImg] = useState<string | null>(null);
+  
+  const [currentPage, setCurrentPage] = useState(1);
+  const ITEMS_PER_PAGE = 50;
 
   const fetchRegions = async () => {
     try {
@@ -55,6 +61,10 @@ export default function SearchDetections() {
       if (dateTo) params.append('date_to', dateTo);
       if (verified) params.append('verified', verified);
       if (selectedRegionId) params.append('region_id', selectedRegionId);
+      params.append('limit', '1000'); // Lấy nhiều dữ liệu để phân trang ở client
+
+      setCurrentPage(1); // Reset về trang 1 khi search mới
+      setSelectedItems([]);
 
       const res = await fetch(`${API_BASE}/admin/detections/search?${params.toString()}`);
       if (!res.ok) {
@@ -77,6 +87,58 @@ export default function SearchDetections() {
     setVerified('');
     setSelectedRegionId('');
     setResults([]);
+  };
+
+  const handleDelete = async (id: number) => {
+    if (!confirm('Bạn có chắc chắn muốn xóa bản ghi này? Hành động này không thể hoàn tác.')) return;
+    
+    setActionLoading(prev => ({ ...prev, [id]: true }));
+    try {
+      const res = await fetch(`${API_BASE}/admin/detections/${id}`, {
+        method: 'DELETE',
+      });
+      if (!res.ok) throw new Error('Không thể xóa bản ghi');
+      setResults(prev => prev.filter(r => r.id !== id));
+    } catch (err: any) {
+      alert(err.message || 'Lỗi khi xóa');
+    } finally {
+      setActionLoading(prev => ({ ...prev, [id]: false }));
+    }
+  };
+
+  const currentItems = results.slice((currentPage - 1) * ITEMS_PER_PAGE, currentPage * ITEMS_PER_PAGE);
+
+  const handleToggleSelect = (id: number) => {
+    setSelectedItems(prev => prev.includes(id) ? prev.filter(item => item !== id) : [...prev, id]);
+  };
+
+  const handleToggleSelectAll = () => {
+    if (selectedItems.length === currentItems.length && currentItems.length > 0) {
+      setSelectedItems([]);
+    } else {
+      setSelectedItems(currentItems.map(item => item.id));
+    }
+  };
+
+  const handleBulkDelete = async () => {
+    if (selectedItems.length === 0) return;
+    if (!confirm(`Bạn có chắc chắn muốn xóa ${selectedItems.length} bản ghi đã chọn? Hành động này không thể hoàn tác.`)) return;
+
+    setIsDeletingBulk(true);
+    try {
+      const res = await fetch(`${API_BASE}/admin/detections/bulk-delete`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ids: selectedItems })
+      });
+      if (!res.ok) throw new Error('Lỗi khi xóa nhiều bản ghi');
+      setResults(prev => prev.filter(r => !selectedItems.includes(r.id)));
+      setSelectedItems([]);
+    } catch (err: any) {
+      alert(err.message || 'Lỗi hệ thống khi xóa nhiều');
+    } finally {
+      setIsDeletingBulk(false);
+    }
   };
 
   useEffect(() => {
@@ -183,11 +245,42 @@ export default function SearchDetections() {
       )}
 
       {/* Kết quả tìm kiếm */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '15px' }}>
+        <h2 style={{ fontSize: '1.2rem', margin: 0 }}>Kết quả ({results.length})</h2>
+        {selectedItems.length > 0 && (
+          <button 
+            onClick={handleBulkDelete}
+            disabled={isDeletingBulk}
+            style={{
+              padding: '8px 16px',
+              backgroundColor: 'rgba(239, 68, 68, 0.2)',
+              border: '1px solid rgba(239, 68, 68, 0.4)',
+              color: '#f87171',
+              borderRadius: '6px',
+              cursor: isDeletingBulk ? 'not-allowed' : 'pointer',
+              fontWeight: 600,
+              opacity: isDeletingBulk ? 0.7 : 1
+            }}
+          >
+            {isDeletingBulk ? <i className="fa-solid fa-spinner fa-spin"></i> : <i className="fa-solid fa-trash-can"></i>}
+            {' '}Xóa {selectedItems.length} mục đã chọn
+          </button>
+        )}
+      </div>
+
       <div className="card" style={{ padding: '0', overflow: 'hidden' }}>
         <div className="table-scroll-container">
           <table style={{ minWidth: '850px' }}>
             <thead>
               <tr>
+                <th style={{ width: '40px', textAlign: 'center' }}>
+                  <input 
+                    type="checkbox" 
+                    checked={selectedItems.length > 0 && selectedItems.length === currentItems.length && currentItems.length > 0}
+                    onChange={handleToggleSelectAll}
+                    style={{ cursor: 'pointer' }}
+                  />
+                </th>
                 <th style={{ width: '80px' }}>ID</th>
                 <th style={{ width: '120px' }}>Ảnh chụp</th>
                 <th>Biển số xe</th>
@@ -200,21 +293,29 @@ export default function SearchDetections() {
             <tbody>
               {isLoading ? (
                 <tr>
-                  <td colSpan={7} style={{ textAlign: 'center', padding: '40px' }}>
+                  <td colSpan={8} style={{ textAlign: 'center', padding: '40px' }}>
                     <div className="spinner"></div>
                   </td>
                 </tr>
               ) : results.length === 0 ? (
                 <tr>
-                  <td colSpan={7} style={{ textAlign: 'center', padding: '30px', color: 'rgba(255,255,255,0.4)' }}>
+                  <td colSpan={8} style={{ textAlign: 'center', padding: '30px', color: 'rgba(255,255,255,0.4)' }}>
                     Không có kết quả tìm kiếm nào phù hợp
                   </td>
                 </tr>
               ) : (
-                results.map(item => {
+                currentItems.map(item => {
                   const formattedTime = formatVnTime(item.created_at);
                   return (
-                    <tr key={item.id}>
+                    <tr key={item.id} style={{ background: selectedItems.includes(item.id) ? 'rgba(239, 68, 68, 0.05)' : 'transparent' }}>
+                      <td style={{ textAlign: 'center' }}>
+                        <input 
+                          type="checkbox" 
+                          checked={selectedItems.includes(item.id)}
+                          onChange={() => handleToggleSelect(item.id)}
+                          style={{ cursor: 'pointer' }}
+                        />
+                      </td>
                       <td style={{ color: 'rgba(255,255,255,0.4)' }}>#{item.id}</td>
                       <td>
                         {item.image_path ? (
@@ -265,6 +366,49 @@ export default function SearchDetections() {
           </table>
         </div>
       </div>
+      
+      {/* Pagination Controls */}
+      {!isLoading && results.length > ITEMS_PER_PAGE && (
+        <div style={{ display: 'flex', justifyContent: 'center', gap: '15px', marginTop: '20px', marginBottom: '30px' }}>
+          <button
+            onClick={() => setCurrentPage(prev => Math.max(prev - 1, 1))}
+            disabled={currentPage === 1}
+            style={{
+              padding: '8px 16px',
+              backgroundColor: currentPage === 1 ? 'rgba(255,255,255,0.05)' : 'var(--primary)',
+              color: currentPage === 1 ? 'rgba(255,255,255,0.4)' : '#fff',
+              border: 'none',
+              borderRadius: '6px',
+              cursor: currentPage === 1 ? 'not-allowed' : 'pointer',
+              fontWeight: 600
+            }}
+          >
+            <i className="fa-solid fa-chevron-left" style={{ marginRight: '8px' }}></i>
+            Trang {currentPage > 1 ? currentPage - 1 : ''}
+          </button>
+          
+          <div style={{ display: 'flex', alignItems: 'center', fontWeight: 600, color: 'rgba(255,255,255,0.7)' }}>
+            Trang {currentPage} / {Math.ceil(results.length / ITEMS_PER_PAGE)}
+          </div>
+          
+          <button
+            onClick={() => setCurrentPage(prev => Math.min(prev + 1, Math.ceil(results.length / ITEMS_PER_PAGE)))}
+            disabled={currentPage === Math.ceil(results.length / ITEMS_PER_PAGE)}
+            style={{
+              padding: '8px 16px',
+              backgroundColor: currentPage === Math.ceil(results.length / ITEMS_PER_PAGE) ? 'rgba(255,255,255,0.05)' : 'var(--primary)',
+              color: currentPage === Math.ceil(results.length / ITEMS_PER_PAGE) ? 'rgba(255,255,255,0.4)' : '#fff',
+              border: 'none',
+              borderRadius: '6px',
+              cursor: currentPage === Math.ceil(results.length / ITEMS_PER_PAGE) ? 'not-allowed' : 'pointer',
+              fontWeight: 600
+            }}
+          >
+            Trang {currentPage < Math.ceil(results.length / ITEMS_PER_PAGE) ? currentPage + 1 : ''}
+            <i className="fa-solid fa-chevron-right" style={{ marginLeft: '8px' }}></i>
+          </button>
+        </div>
+      )}
 
       {/* Lightbox hiển thị ảnh lớn */}
       {selectedImg && (

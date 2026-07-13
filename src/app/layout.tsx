@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import "./globals.css";
+import AnimatedBackground from "@/components/AnimatedBackground";
 
 export const metadata: Metadata = {
   title: "Nhận Diện Biển Số Xe Việt Nam - LPR YOLO",
@@ -28,6 +29,7 @@ export default function RootLayout({
         />
       </head>
       <body>
+        <AnimatedBackground />
         {children}
       </body>
     </html>

@@ -77,6 +77,7 @@ export default function RealtimeTab() {
   const activePlatesRef = useRef<Record<string, ActivePlate>>({});
   const historyRecordsRef = useRef<HistoryRecord[]>([]);
   const currentDetectionsRef = useRef<PlateResult[]>([]);
+  const smoothedDetectionsRef = useRef<Record<string, PlateResult>>({});
   const sentFrameSizeRef = useRef({ width: 640, height: 480 });
   const drawLoopActiveRef = useRef(false);
   const sendSingleFrameRef = useRef<() => void>(() => {});
@@ -89,9 +90,9 @@ export default function RealtimeTab() {
     const displayPlates = activePlates && activePlates.length > 0 ? activePlates : results;
     currentDetectionsRef.current = displayPlates;
     processRealtimeDetections(results);
-    // Gửi frame tiếp theo sau ~200ms → target ~4 FPS
+    // Gửi frame tiếp theo ngay lập tức để đạt FPS tối đa cho bounding box
     if (isStreamingRef.current) {
-      setTimeout(sendSingleFrameRef.current, 200);
+      setTimeout(sendSingleFrameRef.current, 0);
     }
   }, []);
 
@@ -112,9 +113,19 @@ export default function RealtimeTab() {
   });
 
   // Load cameras khi component mount — tự động xin quyền nếu chưa có
+  // Cleanup camera khi component unmount (ví dụ khi đăng xuất)
   useEffect(() => {
     loadCameras();
     loadRegions();
+    
+    return () => {
+      // Dọn dẹp tiến trình camera khi unmount
+      if (cameraStreamRef.current) {
+        cameraStreamRef.current.getTracks().forEach(track => track.stop());
+      }
+      isStreamingRef.current = false;
+      drawLoopActiveRef.current = false;
+    };
   }, []);
 
   async function loadRegions() {
@@ -193,11 +204,47 @@ export default function RealtimeTab() {
 
   function drawDetectionsOnCanvas(ctx: CanvasRenderingContext2D, canvas: HTMLCanvasElement) {
     const detections = currentDetectionsRef.current;
-    if (!detections || detections.length === 0) return;
+    
+    // Nội suy mượt tọa độ bounding box cho các biển số đang active
+    const activeTexts = new Set<string>();
+    
+    if (detections && detections.length > 0) {
+      detections.forEach((plate) => {
+        const text = plate.text;
+        activeTexts.add(text);
+        
+        if (!smoothedDetectionsRef.current[text]) {
+          // Khởi tạo tọa độ nếu chưa tồn tại
+          smoothedDetectionsRef.current[text] = {
+            bbox: [...plate.bbox],
+            text: text,
+            conf: plate.conf,
+          };
+        } else {
+          // Nội suy tuyến tính (Lerp) về phía tọa độ mới
+          const smoothed = smoothedDetectionsRef.current[text];
+          const lerpFactor = 1.0; // Đặt thành 1.0 để bám ngay lập tức, loại bỏ độ trễ (lag)
+          for (let j = 0; j < 4; j++) {
+            smoothed.bbox[j] = smoothed.bbox[j] + (plate.bbox[j] - smoothed.bbox[j]) * lerpFactor;
+          }
+          smoothed.conf = smoothed.conf + (plate.conf - smoothed.conf) * lerpFactor;
+        }
+      });
+    }
+
+    // Dọn dẹp những biển đã biến mất khỏi danh sách active
+    Object.keys(smoothedDetectionsRef.current).forEach((text) => {
+      if (!activeTexts.has(text)) {
+        delete smoothedDetectionsRef.current[text];
+      }
+    });
+
+    const smoothedPlates = Object.values(smoothedDetectionsRef.current);
+    if (smoothedPlates.length === 0) return;
 
     const colors = ['#00FF00', '#FF8C00', '#00FFFF', '#FF00FF', '#FFFF00'];
 
-    detections.forEach((plate, i) => {
+    smoothedPlates.forEach((plate, i) => {
       const bbox = plate.bbox;
       if (!bbox || bbox.length !== 4) return;
 
@@ -259,12 +306,35 @@ export default function RealtimeTab() {
   // Sync ref để handleResults/handleConnected có thể gọi qua ref
   sendSingleFrameRef.current = sendSingleFrame;
 
-  // Tạo ảnh chụp snapshot có vẽ khung nhận diện chính xác với frame hình gửi đi
+  // Tạo ảnh chụp snapshot có vẽ khung nhận diện chính xác với hình lồng ảnh (PiP)
   const getAnnotatedSnapshot = useCallback((results: PlateResult[]) => {
     const canvas = hiddenCanvasRef.current;
     if (!canvas) return '';
     const ctx = canvas.getContext('2d');
     if (!ctx) return canvas.toDataURL('image/jpeg', 0.8);
+
+    // 1. Crop ảnh biển số sạch (trước khi vẽ đè bounding box) từ kết quả đầu tiên
+    let tempCanvas: HTMLCanvasElement | null = null;
+    const firstPlate = results[0];
+    if (firstPlate && firstPlate.bbox && firstPlate.bbox.length === 4) {
+      const bbox = firstPlate.bbox;
+      const x1 = Math.max(0, Math.round(bbox[0]));
+      const y1 = Math.max(0, Math.round(bbox[1]));
+      const x2 = Math.min(canvas.width, Math.round(bbox[2]));
+      const y2 = Math.min(canvas.height, Math.round(bbox[3]));
+      const cropW = x2 - x1;
+      const cropH = y2 - y1;
+
+      if (cropW > 0 && cropH > 0) {
+        tempCanvas = document.createElement('canvas');
+        tempCanvas.width = cropW;
+        tempCanvas.height = cropH;
+        const tempCtx = tempCanvas.getContext('2d');
+        if (tempCtx) {
+          tempCtx.drawImage(canvas, x1, y1, cropW, cropH, 0, 0, cropW, cropH);
+        }
+      }
+    }
 
     // Lưu lại trạng thái canvas trước khi vẽ đè
     ctx.save();
@@ -298,6 +368,28 @@ export default function RealtimeTab() {
       ctx.fillStyle = '#000000';
       ctx.fillText(label, x1 + 1, y1 - 5);
     });
+
+    // 2. Vẽ ảnh nhỏ (inset crop) vào góc dưới bên phải nếu có
+    if (tempCanvas && tempCanvas.width > 0 && tempCanvas.height > 0) {
+      const w = canvas.width;
+      const h = canvas.height;
+
+      // Chiều rộng inset bằng 30% chiều rộng canvas (giới hạn từ 150px đến 250px)
+      const insetW = Math.max(150, Math.min(250, Math.round(w * 0.3)));
+      const insetH = Math.round(insetW * (tempCanvas.height / tempCanvas.width));
+
+      // Vị trí paste (cách góc dưới phải 15px)
+      const border = 3;
+      const pasteX = w - insetW - border * 2 - 15;
+      const pasteY = h - insetH - border * 2 - 15;
+
+      // Vẽ viền màu xanh lá cho ảnh nhỏ
+      ctx.fillStyle = '#00FF00';
+      ctx.fillRect(pasteX, pasteY, insetW + border * 2, insetH + border * 2);
+
+      // Vẽ ảnh crop đã resize vào trong viền
+      ctx.drawImage(tempCanvas, 0, 0, tempCanvas.width, tempCanvas.height, pasteX + border, pasteY + border, insetW, insetH);
+    }
 
     const dataUrl = canvas.toDataURL('image/jpeg', 0.8);
     ctx.restore();
@@ -428,6 +520,7 @@ export default function RealtimeTab() {
     isStreamingRef.current = false;
     drawLoopActiveRef.current = false;
     currentDetectionsRef.current = [];
+    smoothedDetectionsRef.current = {};
     setIsStreaming(false);
 
     disconnect();
@@ -470,31 +563,88 @@ export default function RealtimeTab() {
   return (
     <>
       <section className="tab-content active">
-        <div className="grid-layout realtime-grid">
-          {/* Left: Webcam Control & Viewport */}
-          <div className="card upload-card">
-            <div className="card-header">
-              <h2>Điều khiển Camera</h2>
-              <p>Bật luồng nhận diện biển số thời gian thực từ camera hoạt động</p>
-            </div>
+        <div className="grid-layout">
+          {/* Left: Configuration & Controls */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
+            {/* Card: Cấu hình & Điều khiển Camera */}
+            <div className="card">
+              <div className="card-header">
+                <h2>Cấu hình Camera</h2>
+                <p>Chọn nguồn camera và vị trí lắp đặt</p>
+              </div>
 
-            <div className="camera-actions-row mb-4">
-              {!isStreaming ? (
-                <button className="btn btn-primary btn-block" onClick={startCamera}>
-                  <i className="fa-solid fa-play"></i> Bắt đầu Camera
-                </button>
-              ) : (
-                <button className="btn btn-danger btn-block" onClick={stopCamera}>
-                  <i className="fa-solid fa-stop"></i> Dừng Camera
-                </button>
-              )}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '1.2rem', padding: '0 1.5rem 1.5rem 1.5rem' }}>
+                <div className="form-group" style={{ margin: 0 }}>
+                  <label htmlFor="camera-select" className="form-label" style={{ fontSize: '0.85rem' }}>
+                    <i className="fa-solid fa-camera" style={{ color: 'var(--primary)', marginRight: '0.5rem' }}></i>
+                    Thiết bị Camera hoạt động:
+                  </label>
+                  <select
+                    id="camera-select"
+                    className="form-select"
+                    value={selectedDeviceId}
+                    onChange={(e) => setSelectedDeviceId(e.target.value)}
+                    disabled={isStreaming}
+                  >
+                    {cameras.length === 0 ? (
+                      <option value="">Không tìm thấy camera nào</option>
+                    ) : (
+                      cameras.map((device, index) => (
+                        <option key={device.deviceId} value={device.deviceId}>
+                          {device.label || `Camera ${index + 1}`}
+                        </option>
+                      ))
+                    )}
+                  </select>
+                </div>
+
+                <div className="form-group" style={{ margin: 0 }}>
+                  <label htmlFor="region-select" className="form-label" style={{ fontSize: '0.85rem' }}>
+                    <i className="fa-solid fa-map-location-dot" style={{ color: 'var(--primary)', marginRight: '0.5rem' }}></i>
+                    Vị trí lắp đặt Camera (Phân vùng):
+                  </label>
+                  <select
+                    id="region-select"
+                    className="form-select"
+                    value={selectedRegionId}
+                    onChange={(e) => setSelectedRegionId(e.target.value)}
+                    disabled={isStreaming}
+                  >
+                    {regions.length === 0 ? (
+                      <option value="">Không tìm thấy phân vùng nào</option>
+                    ) : (
+                      regions.map((reg) => (
+                        <option key={reg.id} value={reg.id}>
+                          {reg.name} {reg.location ? `(${reg.location})` : ''}
+                        </option>
+                      ))
+                    )}
+                  </select>
+                </div>
+
+                <div className="camera-actions-row" style={{ marginTop: '0.5rem' }}>
+                  {!isStreaming ? (
+                    <button className="btn btn-primary btn-block" onClick={startCamera}>
+                      <i className="fa-solid fa-play"></i> Bắt đầu Camera
+                    </button>
+                  ) : (
+                    <button className="btn btn-danger btn-block" onClick={stopCamera}>
+                      <i className="fa-solid fa-stop"></i> Dừng Camera
+                    </button>
+                  )}
+                </div>
+              </div>
             </div>
+          </div>
+
+          {/* Right: Viewport */}
+          <div className="card upload-card">
+
 
             {/* Hidden canvas for frame capture */}
             <canvas ref={hiddenCanvasRef} style={{ display: 'none' }}></canvas>
 
-            {/* Viewport */}
-            <div className="realtime-viewport-container mt-4">
+            <div className="realtime-viewport-container">
               {showPlaceholder && (
                 <div className="viewport-placeholder">
                   {placeholderContent === 'idle' ? (
@@ -522,114 +672,6 @@ export default function RealtimeTab() {
                 style={{ display: showPlaceholder ? 'none' : 'block' }}
               ></canvas>
             </div>
-          </div>
-
-          {/* Right Panel Column Stack */}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
-            
-            {/* Thẻ 1: Cấu hình Camera */}
-            <div className="card">
-              <div className="card-header" style={{ paddingBottom: '0.8rem' }}>
-                <h2>Cấu hình Camera</h2>
-                <p>Chọn nguồn camera đầu vào cho luồng xử lý thời gian thực</p>
-              </div>
-              <div style={{ padding: '0 1.5rem 1.5rem 1.5rem' }}>
-                <div className="form-group" style={{ margin: 0 }}>
-                  <label htmlFor="camera-select" className="form-label" style={{ fontSize: '0.85rem' }}>
-                    <i className="fa-solid fa-camera" style={{ color: 'var(--primary)', marginRight: '0.5rem' }}></i>
-                    Thiết bị Camera hoạt động:
-                  </label>
-                  <select
-                    id="camera-select"
-                    className="form-select"
-                    value={selectedDeviceId}
-                    onChange={(e) => setSelectedDeviceId(e.target.value)}
-                    disabled={isStreaming}
-                  >
-                    {cameras.length === 0 ? (
-                      <option value="">Không tìm thấy camera nào</option>
-                    ) : (
-                      cameras.map((device, index) => (
-                        <option key={device.deviceId} value={device.deviceId}>
-                          {device.label || `Camera ${index + 1}`}
-                        </option>
-                      ))
-                    )}
-                  </select>
-                </div>
-                <div className="form-group" style={{ marginTop: '1.2rem', marginBottom: 0 }}>
-                  <label htmlFor="region-select" className="form-label" style={{ fontSize: '0.85rem' }}>
-                    <i className="fa-solid fa-map-location-dot" style={{ color: 'var(--primary)', marginRight: '0.5rem' }}></i>
-                    Vị trí lắp đặt Camera (Phân vùng):
-                  </label>
-                  <select
-                    id="region-select"
-                    className="form-select"
-                    value={selectedRegionId}
-                    onChange={(e) => setSelectedRegionId(e.target.value)}
-                    disabled={isStreaming}
-                  >
-                    {regions.length === 0 ? (
-                      <option value="">Không tìm thấy phân vùng nào</option>
-                    ) : (
-                      regions.map((reg) => (
-                        <option key={reg.id} value={reg.id}>
-                          {reg.name} {reg.location ? `(${reg.location})` : ''}
-                        </option>
-                      ))
-                    )}
-                  </select>
-                </div>
-              </div>
-            </div>
-
-            {/* Thẻ 2: Lịch sử nhận diện thời gian thực */}
-            <div className="card results-card" style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
-              <div className="card-header">
-                <h2>Lịch sử nhận diện thời gian thực</h2>
-                <p>Các biển số phát hiện được từ luồng stream camera trực tiếp</p>
-              </div>
-
-              <div className="realtime-history-container" style={{ flex: 1, overflowY: 'auto' }}>
-                {historyRecords.length === 0 ? (
-                  <div className="empty-state">
-                    <i className="fa-solid fa-clock-rotate-left"></i>
-                    <h3>Lịch sử trống</h3>
-                    <p>Khi camera hoạt động, các biển số xe nhận diện được sẽ xuất hiện ở đây theo thời gian thực</p>
-                  </div>
-                ) : (
-                  <div className="history-log">
-                    {historyRecords.slice(0, 20).map((record) => {
-                      const startStr = formatTime(record.startTime);
-                      const endStr = formatTime(record.endTime);
-                      const timeDisplay = startStr !== endStr ? `${startStr} - ${endStr}` : startStr;
-
-                      return (
-                        <div
-                          key={record.id}
-                          className="history-item"
-                          onClick={() => openModal(record.id)}
-                        >
-                          <div className="history-info">
-                            <span className="history-plate">{record.plateText}</span>
-                            <div className="history-meta">
-                              <span className="history-time">
-                                <i className="fa-regular fa-clock"></i> {timeDisplay}
-                              </span>
-                              <span className="badge badge-conf">{(record.maxConf * 100).toFixed(2)}% Conf</span>
-                            </div>
-                          </div>
-                          <span className="badge badge-text" title="Bấm để xem ảnh chụp">
-                            <i className="fa-solid fa-image"></i>
-                          </span>
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
-            </div>
-
           </div>
         </div>
       </section>

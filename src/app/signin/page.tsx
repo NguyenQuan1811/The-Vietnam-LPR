@@ -15,18 +15,20 @@ export default function SignInPage() {
   if (!mounted) return null;
 
   return (
-    <LoginModal
-      isOpen={true}
-      onClose={() => router.push('/login')}
-      onLoginSuccess={(user) => {
-        if (user.role === 'admin') {
-          router.push('/admin/dashboard');
-        } else {
-          router.push('/home');
-        }
-      }}
-      initialMode="register"
-      embedded={true}
-    />
+    <div className="app-container">
+      <LoginModal
+        isOpen={true}
+        onClose={() => router.push('/login')}
+        onLoginSuccess={(user) => {
+          if (user.role === 'admin') {
+            router.push('/admin/dashboard');
+          } else {
+            router.push('/home');
+          }
+        }}
+        initialMode="register"
+        embedded={true}
+      />
+    </div>
   );
 }

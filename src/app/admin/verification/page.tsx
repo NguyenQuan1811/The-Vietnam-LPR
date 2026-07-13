@@ -22,11 +22,14 @@ export default function Verification() {
   const [error, setError] = useState('');
   const [editedPlates, setEditedPlates] = useState<{ [key: number]: string }>({});
   const [actionLoading, setActionLoading] = useState<{ [key: number]: boolean }>({});
+  const [selectedItems, setSelectedItems] = useState<number[]>([]);
+  const [currentPage, setCurrentPage] = useState(1);
+  const ITEMS_PER_PAGE = 20;
 
   const fetchUnverified = async () => {
     try {
       setIsLoading(true);
-      const res = await fetch(`${API_BASE}/admin/detections/unverified?limit=20`);
+      const res = await fetch(`${API_BASE}/admin/detections/unverified?limit=500`);
       if (!res.ok) {
         throw new Error('Không thể tải danh sách biển số chưa xác minh.');
       }
@@ -49,6 +52,14 @@ export default function Verification() {
   useEffect(() => {
     fetchUnverified();
   }, []);
+
+  // Đảm bảo không bị kẹt ở trang rỗng nếu xác minh hết ảnh của trang cuối
+  useEffect(() => {
+    const totalPages = Math.ceil(items.length / ITEMS_PER_PAGE);
+    if (currentPage > totalPages && totalPages > 0) {
+      setCurrentPage(totalPages);
+    }
+  }, [items.length, currentPage]);
 
   const handleInputChange = (id: number, val: string) => {
     setEditedPlates(prev => ({ ...prev, [id]: val.toUpperCase() }));
@@ -99,10 +110,56 @@ export default function Verification() {
 
       // Remove from list
       setItems(prev => prev.filter(item => item.id !== id));
+      setSelectedItems(prev => prev.filter(selectedId => selectedId !== id));
     } catch (err: any) {
       alert(err.message || 'Đã xảy ra lỗi.');
     } finally {
       setActionLoading(prev => ({ ...prev, [id]: false }));
+    }
+  };
+
+  const handleToggleSelect = (id: number) => {
+    setSelectedItems(prev => 
+      prev.includes(id) ? prev.filter(itemId => itemId !== id) : [...prev, id]
+    );
+  };
+
+  const handleToggleSelectAll = () => {
+    if (selectedItems.length === items.length && items.length > 0) {
+      setSelectedItems([]);
+    } else {
+      setSelectedItems(items.map(item => item.id));
+    }
+  };
+
+  const handleBulkDelete = async () => {
+    if (selectedItems.length === 0) return;
+    if (!confirm(`Bạn có chắc muốn xóa ${selectedItems.length} bản ghi đã chọn?`)) return;
+
+    const newLoadingState = { ...actionLoading };
+    selectedItems.forEach(id => newLoadingState[id] = true);
+    setActionLoading(newLoadingState);
+
+    try {
+      const res = await fetch(`${API_BASE}/admin/detections/bulk-delete`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ids: selectedItems })
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.detail || 'Lỗi khi xóa nhiều bản ghi.');
+      }
+
+      setItems(prev => prev.filter(item => !selectedItems.includes(item.id)));
+      setSelectedItems([]);
+    } catch (err: any) {
+      alert(err.message || 'Đã xảy ra lỗi.');
+    } finally {
+      const clearedLoading = { ...actionLoading };
+      selectedItems.forEach(id => delete clearedLoading[id]);
+      setActionLoading(clearedLoading);
     }
   };
 
@@ -126,6 +183,35 @@ export default function Verification() {
         </button>
       </div>
 
+      {items.length > 0 && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: '15px', marginBottom: '20px', background: 'rgba(255,255,255,0.05)', padding: '10px 15px', borderRadius: '8px' }}>
+          <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
+            <input 
+              type="checkbox" 
+              checked={selectedItems.length === items.length && items.length > 0}
+              onChange={handleToggleSelectAll}
+              style={{ width: '16px', height: '16px', cursor: 'pointer' }}
+            />
+            <span>Chọn tất cả</span>
+          </label>
+          
+          <span style={{ color: 'rgba(255,255,255,0.5)', fontSize: '0.9rem' }}>|</span>
+          
+          <span style={{ fontSize: '0.9rem' }}>
+            Đã chọn: <strong style={{ color: 'var(--primary)' }}>{selectedItems.length}</strong>
+          </span>
+
+          {selectedItems.length > 0 && (
+            <button 
+              onClick={handleBulkDelete}
+              style={{ marginLeft: 'auto', backgroundColor: 'rgba(239, 68, 68, 0.2)', border: '1px solid rgba(239, 68, 68, 0.4)', color: '#f87171', padding: '6px 12px', borderRadius: '6px', cursor: 'pointer', fontSize: '0.9rem', display: 'flex', alignItems: 'center', gap: '5px' }}
+            >
+              <i className="fa-solid fa-trash-can"></i> Xóa ({selectedItems.length})
+            </button>
+          )}
+        </div>
+      )}
+
       {error && (
         <div className="card" style={{ padding: '20px', border: '1px solid rgba(239, 68, 68, 0.2)', color: '#fca5a5', marginBottom: '20px' }}>
           <i className="fa-solid fa-circle-exclamation" style={{ marginRight: '8px' }}></i> {error}
@@ -140,13 +226,22 @@ export default function Verification() {
         </div>
       ) : (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: '20px' }}>
-          {items.map(item => {
+          {items.slice((currentPage - 1) * ITEMS_PER_PAGE, currentPage * ITEMS_PER_PAGE).map(item => {
             const formattedTime = formatVnTime(item.created_at);
             const isSaving = actionLoading[item.id];
             
             return (
-              <div key={item.id} className="card" style={{ display: 'flex', flexDirection: 'column', gap: '15px', padding: '15px' }}>
+              <div key={item.id} className="card" style={{ display: 'flex', flexDirection: 'column', gap: '15px', padding: '15px', position: 'relative' }}>
                 
+                <div style={{ position: 'absolute', top: '10px', right: '10px', zIndex: 10 }}>
+                  <input 
+                    type="checkbox" 
+                    checked={selectedItems.includes(item.id)}
+                    onChange={() => handleToggleSelect(item.id)}
+                    style={{ width: '18px', height: '18px', cursor: 'pointer', accentColor: 'var(--primary)' }}
+                  />
+                </div>
+
                 {/* Ảnh snapshot */}
                 <div style={{ position: 'relative', width: '100%', height: '180px', borderRadius: '8px', overflow: 'hidden', background: '#000', display: 'flex', justifyContent: 'center', alignItems: 'center', border: '1px solid rgba(255,255,255,0.05)' }}>
                   {item.image_path ? (
@@ -250,6 +345,49 @@ export default function Verification() {
               </div>
             );
           })}
+        </div>
+      )}
+
+      {/* Pagination Controls */}
+      {!isLoading && items.length > ITEMS_PER_PAGE && (
+        <div style={{ display: 'flex', justifyContent: 'center', gap: '15px', marginTop: '30px', marginBottom: '20px' }}>
+          <button
+            onClick={() => setCurrentPage(prev => Math.max(prev - 1, 1))}
+            disabled={currentPage === 1}
+            style={{
+              padding: '8px 16px',
+              backgroundColor: currentPage === 1 ? 'rgba(255,255,255,0.05)' : 'var(--primary)',
+              color: currentPage === 1 ? 'rgba(255,255,255,0.4)' : '#fff',
+              border: 'none',
+              borderRadius: '6px',
+              cursor: currentPage === 1 ? 'not-allowed' : 'pointer',
+              fontWeight: 600
+            }}
+          >
+            <i className="fa-solid fa-chevron-left" style={{ marginRight: '8px' }}></i>
+            Trang {currentPage > 1 ? currentPage - 1 : ''}
+          </button>
+          
+          <div style={{ display: 'flex', alignItems: 'center', fontWeight: 600, color: 'rgba(255,255,255,0.7)' }}>
+            Trang {currentPage} / {Math.ceil(items.length / ITEMS_PER_PAGE)}
+          </div>
+          
+          <button
+            onClick={() => setCurrentPage(prev => Math.min(prev + 1, Math.ceil(items.length / ITEMS_PER_PAGE)))}
+            disabled={currentPage === Math.ceil(items.length / ITEMS_PER_PAGE)}
+            style={{
+              padding: '8px 16px',
+              backgroundColor: currentPage === Math.ceil(items.length / ITEMS_PER_PAGE) ? 'rgba(255,255,255,0.05)' : 'var(--primary)',
+              color: currentPage === Math.ceil(items.length / ITEMS_PER_PAGE) ? 'rgba(255,255,255,0.4)' : '#fff',
+              border: 'none',
+              borderRadius: '6px',
+              cursor: currentPage === Math.ceil(items.length / ITEMS_PER_PAGE) ? 'not-allowed' : 'pointer',
+              fontWeight: 600
+            }}
+          >
+            Trang {currentPage < Math.ceil(items.length / ITEMS_PER_PAGE) ? currentPage + 1 : ''}
+            <i className="fa-solid fa-chevron-right" style={{ marginLeft: '8px' }}></i>
+          </button>
         </div>
       )}
     </>

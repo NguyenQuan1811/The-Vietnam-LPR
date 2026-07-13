@@ -3,6 +3,8 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 
+import { API_BASE } from '@/lib/api';
+
 export default function TopBar() {
   const router = useRouter();
   const [username, setUsername] = useState('Admin');
@@ -14,11 +16,23 @@ export default function TopBar() {
     }
   }, []);
 
-  const handleLogout = () => {
+  const handleLogout = async () => {
+    if (username) {
+      try {
+        await fetch(`${API_BASE}/auth/logout`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username: username }),
+        });
+      } catch (err) {
+        console.error('Lỗi khi gọi API đăng xuất:', err);
+      }
+    }
     localStorage.removeItem('isLoggedIn');
     localStorage.removeItem('currentUser');
     localStorage.removeItem('userRole');
-    router.push('/home');
+    localStorage.removeItem('userId');
+    router.push('/login');
   };
 
   return (

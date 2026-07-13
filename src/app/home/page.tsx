@@ -7,7 +7,6 @@ import ImageTab from '@/components/ImageTab';
 import VideoTab from '@/components/VideoTab';
 import RealtimeTab from '@/components/RealtimeTab';
 import GeneralHistoryModal from '@/components/GeneralHistoryModal';
-import AnimatedBackground from '@/components/AnimatedBackground';
 
 import { API_BASE } from '@/lib/api';
 
@@ -76,8 +75,6 @@ export default function Home() {
 
   return (
     <div className="app-container">
-      {/* Animated Background */}
-      <AnimatedBackground />
 
       <Navbar
         activeTab={activeTab}
@@ -91,9 +88,15 @@ export default function Home() {
       />
 
       <main className="main-content">
-        {activeTab === 'image-tab' && (isLoggedIn ? <ImageTab /> : <RequireLogin onLoginClick={() => router.push('/login')} />)}
-        {activeTab === 'video-tab' && (isLoggedIn ? <VideoTab /> : <RequireLogin onLoginClick={() => router.push('/login')} />)}
-        {activeTab === 'realtime-tab' && <RealtimeTab />}
+        <div style={{ display: activeTab === 'image-tab' ? 'block' : 'none', height: '100%' }} className="fade-in-section">
+          {isLoggedIn ? <ImageTab /> : <RequireLogin onLoginClick={() => router.push('/login')} />}
+        </div>
+        <div style={{ display: activeTab === 'video-tab' ? 'block' : 'none', height: '100%' }} className="fade-in-section">
+          {isLoggedIn ? <VideoTab /> : <RequireLogin onLoginClick={() => router.push('/login')} />}
+        </div>
+        <div style={{ display: activeTab === 'realtime-tab' ? 'block' : 'none', height: '100%' }} className="fade-in-section">
+          <RealtimeTab />
+        </div>
       </main>
 
       <footer className="app-footer">
