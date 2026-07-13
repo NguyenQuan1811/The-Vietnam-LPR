@@ -1,9 +1,9 @@
 import os
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+load_dotenv()
 
-# Setup DB connection
-DATABASE_URL = "postgresql://postgres:18112005@localhost:5432/Web_orc"
+DATABASE_URL = os.getenv("DATABASE_URL")
 engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
