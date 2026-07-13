@@ -5,7 +5,7 @@ from sqlalchemy import func as sa_func, cast, Date as SADate
 from sqlalchemy.orm import Session
 from fastapi import HTTPException
 
-from src.models import models
+from src.models import models, schemas
 from src.utils.helpers import log_activity, get_vietnam_now, to_naive_vn
 from src.utils.security import hash_password
 
@@ -372,13 +372,22 @@ class AdminService:
 
         # Xóa file snapshot nếu tồn tại
         if detection.image_path:
-            # image_path dạng "/static/snapshots/xxx.jpg" hoặc URL tương đối
-            file_path = os.path.join("backend", detection.image_path.lstrip("/"))
-            if os.path.exists(file_path):
+            if "supabase.co" in detection.image_path:
                 try:
-                    os.remove(file_path)
-                except OSError:
-                    pass  # Không chặn xóa DB nếu file đã bị xóa
+                    from src.utils.helpers import supabase_client
+                    if supabase_client:
+                        filename = detection.image_path.split("/")[-1]
+                        supabase_client.storage.from_("image").remove([filename])
+                except Exception:
+                    pass
+            else:
+                # image_path dạng "/static/snapshots/xxx.jpg" hoặc URL tương đối
+                file_path = os.path.join("backend", detection.image_path.lstrip("/"))
+                if os.path.exists(file_path):
+                    try:
+                        os.remove(file_path)
+                    except OSError:
+                        pass  # Không chặn xóa DB nếu file đã bị xóa
 
         # Xóa Prediction liên quan (nếu đã được verify trước đó) + cập nhật Statistic
         prediction = db.query(models.Prediction).filter(models.Prediction.detection_id == detection_id).first()
@@ -398,3 +407,54 @@ class AdminService:
 
         log_activity(db, None, "Xóa detection", f"Đã xóa bản ghi nhận diện #{detection_id} (biển số '{plate_text}').")
         return {"status": "success", "message": "Đã xóa bản ghi nhận diện thành công."}
+
+    @staticmethod
+    def admin_bulk_delete_detections(payload: schemas.BulkDeleteRequest, db: Session):
+        """Xóa nhiều bản ghi nhận diện (detection) cùng lúc."""
+        if not payload.ids:
+            return {"status": "success", "message": "Không có bản ghi nào được chọn để xóa.", "deleted_count": 0}
+            
+        detections = db.query(models.Detection).filter(models.Detection.id.in_(payload.ids)).all()
+        if not detections:
+             from fastapi import HTTPException
+             raise HTTPException(status_code=404, detail="Không tìm thấy bản ghi nhận diện nào.")
+
+        deleted_count = 0
+        for detection in detections:
+            # Xóa file snapshot
+            if detection.image_path:
+                if "supabase.co" in detection.image_path:
+                    try:
+                        from src.utils.helpers import supabase_client
+                        if supabase_client:
+                            filename = detection.image_path.split("/")[-1]
+                            supabase_client.storage.from_("image").remove([filename])
+                    except Exception:
+                        pass
+                else:
+                    file_path = os.path.join(".", detection.image_path.lstrip("/"))
+                    if os.path.exists(file_path):
+                        try:
+                            os.remove(file_path)
+                        except OSError:
+                            pass
+            
+            # Update Statistic & Delete Prediction
+            prediction = db.query(models.Prediction).filter(models.Prediction.detection_id == detection.id).first()
+            if prediction:
+                from src.utils.helpers import get_vietnam_now
+                today = get_vietnam_now().date()
+                stat = db.query(models.Statistic).filter(models.Statistic.stat_date == today).first()
+                if stat:
+                    if prediction.is_correct == 1:
+                        stat.correct_count = max(0, stat.correct_count - 1)
+                    else:
+                        stat.incorrect_count = max(0, stat.incorrect_count - 1)
+                db.delete(prediction)
+                
+            db.delete(detection)
+            deleted_count += 1
+            
+        db.commit()
+        log_activity(db, None, "Xóa nhiều detection", f"Đã xóa {deleted_count} bản ghi nhận diện.")
+        return {"status": "success", "message": f"Đã xóa thành công {deleted_count} bản ghi.", "deleted_count": deleted_count}

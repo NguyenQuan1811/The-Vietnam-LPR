@@ -1,7 +1,7 @@
 import uvicorn
 from fastapi import FastAPI, APIRouter
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
+# Removed StaticFiles import
 from contextlib import asynccontextmanager
 
 from src.config.settings import settings
@@ -113,8 +113,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Mount thư mục static phục vụ lưu và tải ảnh snapshot
-app.mount("/static", StaticFiles(directory="static"), name="static")
+
 
 # Tạo router cha với prefix /api/v1
 api_router = APIRouter(prefix=settings.API_V1_STR)

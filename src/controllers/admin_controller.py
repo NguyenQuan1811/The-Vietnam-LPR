@@ -61,3 +61,7 @@ class AdminController:
     @staticmethod
     def admin_delete_detection(detection_id: int, db: Session):
         return AdminService.admin_delete_detection(detection_id, db)
+
+    @staticmethod
+    def admin_bulk_delete_detections(payload: schemas.BulkDeleteRequest, db: Session):
+        return AdminService.admin_bulk_delete_detections(payload, db)

@@ -68,3 +68,6 @@ class AdminCreateUser(BaseModel):
 
 class AdminUpdateRole(BaseModel):
     role: str
+
+class BulkDeleteRequest(BaseModel):
+    ids: List[int]

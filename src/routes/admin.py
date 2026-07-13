@@ -70,3 +70,7 @@ def admin_delete_user(user_id: int, db: Session = Depends(get_db)):
 @router.delete("/detections/{detection_id}")
 def admin_delete_detection(detection_id: int, db: Session = Depends(get_db)):
     return AdminController.admin_delete_detection(detection_id, db)
+
+@router.post("/detections/bulk-delete")
+def admin_bulk_delete_detections(payload: schemas.BulkDeleteRequest, db: Session = Depends(get_db)):
+    return AdminController.admin_bulk_delete_detections(payload, db)

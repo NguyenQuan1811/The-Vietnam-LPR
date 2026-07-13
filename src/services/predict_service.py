@@ -22,7 +22,7 @@ from src.models import models, schemas
 from src.services.ai_pipeline import init_lpr_service, draw_plate_results
 from src.services.tracking import CentroidTracker
 from src.services.validation import is_valid_plate, get_plate_format_score
-from src.utils.helpers import save_snapshot_image, cleanup_file, log_activity, get_vietnam_now
+from src.utils.helpers import save_snapshot_image, cleanup_file, log_activity, get_vietnam_now, create_combined_snapshot
 
 # Lưu trữ trạng thái video task cũ dùng UUID
 tasks_db = {}
@@ -250,16 +250,14 @@ def process_video_background(job_id: int, input_path: str, output_path: str, fil
                     try:
                         final_text = result['text']
                         final_conf = result['conf']
-                        final_bbox = result.get('bbox')
+                        # Dùng bounding box của frame rõ nét nhất để khớp với ảnh best_frame_img
+                        final_bbox = result.get('best_bbox') or result.get('bbox')
                         format_score = result.get('format_score', 0)
                         if not is_valid_plate(final_text) or format_score <= 0:
                             continue
-                        # Dùng frame đầu tiên của track để chụp snapshot verification
-                        first_img = result.get('first_frame_img') or result.get('best_frame_img') or pil_img
-                        if final_bbox:
-                            annotated_img = draw_plate_results(first_img, [{'bbox': final_bbox, 'text': final_text, 'conf': final_conf}])
-                        else:
-                            annotated_img = draw_plate_results(first_img, [{'bbox': [0, 0, 100, 100], 'text': final_text, 'conf': final_conf}])
+                        # Dùng frame rõ nét nhất để làm ảnh chụp snapshot
+                        best_img = result.get('best_frame_img') or result.get('first_frame_img') or pil_img
+                        annotated_img = create_combined_snapshot(best_img, final_bbox, final_text, final_conf)
                         snapshot_rel_path = save_snapshot_image(annotated_img)
                         with SessionLocal() as db:
                             db_item = models.Detection(
@@ -340,7 +338,8 @@ def process_video_background(job_id: int, input_path: str, output_path: str, fil
             try:
                 final_text = result['text']
                 final_conf = result['conf']
-                final_bbox = result.get('bbox')
+                # Dùng bounding box của frame rõ nét nhất để khớp với ảnh best_frame_img
+                final_bbox = result.get('best_bbox') or result.get('bbox')
                 format_score = result.get('format_score', 0)
 
                 if not is_valid_plate(final_text):
@@ -348,21 +347,13 @@ def process_video_background(job_id: int, input_path: str, output_path: str, fil
                 if format_score <= 0:
                     continue
 
-                # Dùng frame đầu tiên của track để chụp snapshot verification
-                first_img = result.get('first_frame_img') or result.get('best_frame_img')
-
-                try:
-                    if final_bbox and first_img:
-                        annotated_img = draw_plate_results(first_img, [{'bbox': final_bbox, 'text': final_text, 'conf': final_conf}])
-                    elif final_bbox and pil_img:
-                        annotated_img = draw_plate_results(pil_img, [{'bbox': final_bbox, 'text': final_text, 'conf': final_conf}])
-                    else:
-                        from PIL import Image as PILImage
-                        annotated_img = PILImage.new('RGB', (640, 480), color=(0, 0, 0))
-                except Exception:
+                # Dùng frame rõ nét nhất để làm ảnh chụp snapshot
+                best_img = result.get('best_frame_img') or result.get('first_frame_img') or pil_img
+                if not best_img:
                     from PIL import Image as PILImage
-                    annotated_img = PILImage.new('RGB', (640, 480), color=(0, 0, 0))
+                    best_img = PILImage.new('RGB', (640, 480), color=(0, 0, 0))
 
+                annotated_img = create_combined_snapshot(best_img, final_bbox, final_text, final_conf)
                 snapshot_rel_path = save_snapshot_image(annotated_img)
 
                 with SessionLocal() as db:
@@ -708,7 +699,8 @@ class PredictService:
                 for result in finalized:
                     final_text = result['text']
                     final_conf = result['conf']
-                    final_bbox = result.get('bbox')
+                    # Dùng bounding box của frame rõ nét nhất để khớp với ảnh best_frame_img
+                    final_bbox = result.get('best_bbox') or result.get('bbox')
                     format_score = result.get('format_score', 0)
 
                     if not is_valid_plate(final_text):
@@ -716,14 +708,11 @@ class PredictService:
                     if format_score <= 0:
                         continue
 
-                    # Dùng frame đầu tiên của track để chụp snapshot verification
-                    first_img = result.get('first_frame_img') or result.get('best_frame_img') or pil_img
+                    # Dùng frame rõ nét nhất để làm ảnh chụp snapshot
+                    best_img = result.get('best_frame_img') or result.get('first_frame_img') or pil_img
 
-                    # Vẽ snapshot với bounding box thật
-                    if final_bbox:
-                        annotated_img = draw_plate_results(first_img, [{'bbox': final_bbox, 'text': final_text, 'conf': final_conf}])
-                    else:
-                        annotated_img = draw_plate_results(first_img, [{'bbox': [0, 0, 100, 100], 'text': final_text, 'conf': final_conf}])
+                    # Vẽ snapshot kết hợp ảnh tốt nhất và bbox
+                    annotated_img = create_combined_snapshot(best_img, final_bbox, final_text, final_conf)
                     snapshot_rel_path = save_snapshot_image(annotated_img)
 
                     with SessionLocal() as db:
@@ -765,6 +754,7 @@ class PredictService:
         except WebSocketDisconnect:
             pass
         except Exception as e:
+            traceback.print_exc()
             try:
                 await websocket.send_json({"status": "error", "message": str(e)})
             except Exception:
